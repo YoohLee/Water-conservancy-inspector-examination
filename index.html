@@ -32,16 +32,29 @@
         <!-- 试卷选择 -->
         <div class="bg-white rounded-lg shadow-sm p-4 mb-6">
             <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
-                <div class="flex items-center gap-2">
-                    <label for="paperSelect" class="font-medium">选择试卷：</label>
-                    <select id="paperSelect" class="border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50">
-                        <option value="0">混凝土工程(一)</option>
-                        <option value="1">混凝土工程(二)</option>
-                        <option value="2">混凝土工程(三)</option>
-                        <option value="3">岩土工程(一)</option>
-                        <option value="4">岩土工程(二)</option>
-                        <option value="5">岩土工程(三)</option>
-                    </select>
+                <div class="flex flex-col sm:flex-row sm:items-center gap-3">
+                    <div class="flex items-center gap-2">
+                        <label for="paperSelect" class="font-medium">选择试卷：</label>
+                        <select id="paperSelect" class="border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50">
+                            <option value="0">混凝土工程(一)</option>
+                            <option value="1">混凝土工程(二)</option>
+                            <option value="2">混凝土工程(三)</option>
+                            <option value="3">岩土工程(一)</option>
+                            <option value="4">岩土工程(二)</option>
+                            <option value="5">岩土工程(三)</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <label for="modeSelect" class="font-medium">答题模式：</label>
+                        <select id="modeSelect" class="border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-primary/50">
+                            <option value="exam">模拟考试</option>
+                            <option value="practice">练习模式</option>
+                            <option value="wrong">错题集</option>
+                        </select>
+                    </div>
+                    <div class="text-sm text-neutral">
+                        错题：<span id="wrongBookCount" class="font-bold text-danger">0</span>
+                    </div>
                 </div>
                 <div class="flex gap-3">
                     <button id="resetBtn" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-md transition-colors">
@@ -4100,6 +4113,392 @@
             document.querySelectorAll('.answer-result').forEach(div => {
                 div.classList.add('hidden');
             });
+        }
+
+        // 练习模式与错题集增强
+        let currentMode = 'exam';
+        let checkedQuestions = {};
+        const WRONG_BOOK_KEY = 'engineeringWrongBookV1';
+        let wrongBook = loadWrongBook();
+        const modeSelect = document.getElementById('modeSelect');
+        const wrongBookCount = document.getElementById('wrongBookCount');
+
+        document.addEventListener('DOMContentLoaded', () => {
+            currentMode = modeSelect.value;
+            modeSelect.addEventListener('change', (e) => {
+                currentMode = e.target.value;
+                resetQuiz();
+            });
+            renderPaper(currentPaperIndex);
+            updateWrongBookCount();
+            applyModeUI();
+        });
+
+        function loadWrongBook() {
+            try {
+                return JSON.parse(localStorage.getItem(WRONG_BOOK_KEY)) || {};
+            } catch (error) {
+                return {};
+            }
+        }
+
+        function saveWrongBook() {
+            try {
+                localStorage.setItem(WRONG_BOOK_KEY, JSON.stringify(wrongBook));
+            } catch (error) {
+                // 本地存储不可用时，页面仍可正常练习。
+            }
+        }
+
+        function updateWrongBookCount() {
+            wrongBookCount.textContent = Object.keys(wrongBook).length;
+        }
+
+        function applyModeUI() {
+            const isExamMode = currentMode === 'exam';
+            submitBtn.classList.toggle('hidden', !isExamMode);
+            submitBtnBottom.classList.toggle('hidden', !isExamMode);
+            resetBtn.textContent = currentMode === 'wrong' ? '重做错题' : '重置答案';
+            resetBtnBottom.textContent = currentMode === 'wrong' ? '重做错题' : '重置答案';
+            if (!isExamMode) {
+                resultCard.classList.add('hidden');
+            }
+        }
+
+        function getAnswerKey(sectionIndex, questionIndex) {
+            return `${sectionIndex}-${questionIndex}`;
+        }
+
+        function getQuestionKey(paperIndex, sectionIndex, questionIndex) {
+            const paper = papers[paperIndex];
+            const question = paper.sections[sectionIndex].questions[questionIndex];
+            return `${paper.name}::${sectionIndex}::${question.id}`;
+        }
+
+        function normalizeMultiAnswer(answer) {
+            const raw = Array.isArray(answer) ? answer.join('') : String(answer || '');
+            return raw
+                .replace(/[^A-Z]/g, '')
+                .split('')
+                .sort()
+                .join('');
+        }
+
+        function isAnswerEmpty(answer) {
+            return !answer || (Array.isArray(answer) && answer.length === 0);
+        }
+
+        function evaluateQuestion(section, question, userAnswer) {
+            if (section.type === 'multiple') {
+                const correctAnswer = normalizeMultiAnswer(question.answer);
+                const userAnswerText = normalizeMultiAnswer(userAnswer);
+                const selected = userAnswerText.split('').filter(Boolean);
+                const isCorrect = userAnswerText === correctAnswer;
+                let score = 0;
+
+                if (isCorrect) {
+                    score = section.scorePerQuestion;
+                } else {
+                    const hasWrongOption = selected.some(option => !correctAnswer.includes(option));
+                    if (!hasWrongOption) {
+                        score = selected.filter(option => correctAnswer.includes(option)).length * 0.5;
+                    }
+                }
+
+                return {
+                    isCorrect,
+                    score,
+                    userAnswerText,
+                    correctAnswerText: correctAnswer || question.answer
+                };
+            }
+
+            const correctAnswer = String(question.answer || '').trim();
+            const userAnswerText = String(userAnswer || '').trim();
+            const isCorrect = userAnswerText === correctAnswer;
+
+            return {
+                isCorrect,
+                score: isCorrect ? section.scorePerQuestion : 0,
+                userAnswerText,
+                correctAnswerText: correctAnswer
+            };
+        }
+
+        function setQuestionInWrongBook(paperIndex, sectionIndex, questionIndex, shouldKeep) {
+            const key = getQuestionKey(paperIndex, sectionIndex, questionIndex);
+            if (shouldKeep) {
+                const paper = papers[paperIndex];
+                const section = paper.sections[sectionIndex];
+                const question = section.questions[questionIndex];
+                wrongBook[key] = {
+                    paperIndex,
+                    sectionIndex,
+                    questionIndex,
+                    paperName: paper.name,
+                    sectionTitle: section.title,
+                    questionId: question.id,
+                    updatedAt: Date.now()
+                };
+            } else {
+                delete wrongBook[key];
+            }
+            saveWrongBook();
+            updateWrongBookCount();
+        }
+
+        function setQuestionInputsDisabled(sectionIndex, questionIndex, disabled) {
+            document.querySelectorAll(`#q-${sectionIndex}-${questionIndex} input`).forEach(input => {
+                input.disabled = disabled;
+            });
+
+            const checkButton = document.getElementById(`check-${sectionIndex}-${questionIndex}`);
+            if (checkButton && disabled) {
+                checkButton.disabled = true;
+                checkButton.textContent = '已检查';
+                checkButton.className = 'px-3 py-1.5 rounded-md bg-gray-200 text-neutral cursor-not-allowed text-sm';
+            }
+        }
+
+        function showQuestionResult(sectionIndex, questionIndex, result, status = 'answered') {
+            const questionDiv = document.getElementById(`q-${sectionIndex}-${questionIndex}`);
+            const answerDiv = document.getElementById(`ans-${sectionIndex}-${questionIndex}`);
+
+            questionDiv.classList.remove('bg-success/5', 'bg-danger/5', 'bg-warning/5');
+            answerDiv.classList.remove('hidden');
+
+            if (status === 'unanswered') {
+                questionDiv.classList.add('bg-warning/5');
+                answerDiv.innerHTML = `<span class="text-warning font-medium">未作答</span> | 正确答案：<span class="text-success font-medium">${result.correctAnswerText}</span>`;
+                return;
+            }
+
+            if (result.isCorrect) {
+                questionDiv.classList.add('bg-success/5');
+                answerDiv.innerHTML = `<span class="text-success font-medium">回答正确</span> | 正确答案：<span class="text-success font-medium">${result.correctAnswerText}</span>`;
+            } else {
+                questionDiv.classList.add('bg-danger/5');
+                const scoreText = result.score > 0 ? ` | 本题得分：<span class="font-medium">${result.score.toFixed(1)}</span>` : '';
+                answerDiv.innerHTML = `<span class="text-danger font-medium">回答错误</span> | 你的答案：<span class="text-danger">${result.userAnswerText || '未作答'}</span> | 正确答案：<span class="text-success font-medium">${result.correctAnswerText}</span>${scoreText}`;
+            }
+        }
+
+        function checkQuestion(section, sectionIndex, question, questionIndex) {
+            const answerKey = getAnswerKey(sectionIndex, questionIndex);
+            const userAnswer = userAnswers[answerKey];
+
+            if (isAnswerEmpty(userAnswer)) {
+                const result = evaluateQuestion(section, question, '');
+                showQuestionResult(sectionIndex, questionIndex, result, 'unanswered');
+                return;
+            }
+
+            const result = evaluateQuestion(section, question, userAnswer);
+            checkedQuestions[answerKey] = true;
+            showQuestionResult(sectionIndex, questionIndex, result);
+            setQuestionInWrongBook(currentPaperIndex, sectionIndex, questionIndex, !result.isCorrect);
+            setQuestionInputsDisabled(sectionIndex, questionIndex, true);
+        }
+
+        function renderPaper(paperIndex) {
+            const paper = papers[paperIndex];
+            let renderedCount = 0;
+            questionsContainer.innerHTML = '';
+            applyModeUI();
+
+            paper.sections.forEach((section, sectionIndex) => {
+                const visibleQuestions = section.questions
+                    .map((question, questionIndex) => ({ question, questionIndex }))
+                    .filter(({ questionIndex }) => {
+                        if (currentMode !== 'wrong') return true;
+                        return Boolean(wrongBook[getQuestionKey(paperIndex, sectionIndex, questionIndex)]);
+                    });
+
+                if (visibleQuestions.length === 0) return;
+
+                const sectionDiv = document.createElement('div');
+                sectionDiv.className = 'bg-white rounded-lg shadow-sm p-6';
+
+                const sectionTitle = document.createElement('h2');
+                sectionTitle.className = 'text-xl font-bold mb-4 pb-2 border-b border-gray-200';
+                sectionTitle.textContent = section.title;
+                sectionDiv.appendChild(sectionTitle);
+
+                const questionsList = document.createElement('div');
+                questionsList.className = 'space-y-4';
+
+                visibleQuestions.forEach(({ question, questionIndex }) => {
+                    renderedCount++;
+                    const answerKey = getAnswerKey(sectionIndex, questionIndex);
+                    const questionDiv = document.createElement('div');
+                    questionDiv.className = 'question-item p-4 rounded-lg border border-gray-100 hover:border-primary/30 transition-colors';
+                    questionDiv.id = `q-${sectionIndex}-${questionIndex}`;
+
+                    const questionContent = document.createElement('div');
+                    questionContent.className = 'font-medium mb-3 whitespace-pre-line';
+                    const numberSpan = document.createElement('span');
+                    numberSpan.className = 'text-primary mr-1';
+                    numberSpan.textContent = `${question.id}.`;
+                    questionContent.appendChild(numberSpan);
+                    questionContent.appendChild(document.createTextNode(question.content));
+                    questionDiv.appendChild(questionContent);
+
+                    const optionsDiv = document.createElement('div');
+                    optionsDiv.className = 'space-y-2 ml-4';
+
+                    if (section.type === 'judge') {
+                        ['V', 'X'].forEach(option => {
+                            const label = document.createElement('label');
+                            label.className = 'flex items-center gap-2 cursor-pointer';
+                            label.innerHTML = `
+                                <input type="radio" name="judge-${sectionIndex}-${questionIndex}" value="${option}" class="w-4 h-4 text-primary focus:ring-primary/50">
+                                <span>${option === 'V' ? '对' : '错'}</span>
+                            `;
+                            label.querySelector('input').addEventListener('change', () => {
+                                if (isSubmitted || checkedQuestions[answerKey]) return;
+                                userAnswers[answerKey] = option;
+                                if (currentMode !== 'exam') {
+                                    checkQuestion(section, sectionIndex, question, questionIndex);
+                                }
+                            });
+                            optionsDiv.appendChild(label);
+                        });
+                    } else if (section.type === 'single') {
+                        question.options.forEach(option => {
+                            const optionValue = option.charAt(0);
+                            const label = document.createElement('label');
+                            label.className = 'flex items-center gap-2 cursor-pointer';
+                            label.innerHTML = `
+                                <input type="radio" name="single-${sectionIndex}-${questionIndex}" value="${optionValue}" class="w-4 h-4 text-primary focus:ring-primary/50">
+                                <span>${option}</span>
+                            `;
+                            label.querySelector('input').addEventListener('change', () => {
+                                if (isSubmitted || checkedQuestions[answerKey]) return;
+                                userAnswers[answerKey] = optionValue;
+                                if (currentMode !== 'exam') {
+                                    checkQuestion(section, sectionIndex, question, questionIndex);
+                                }
+                            });
+                            optionsDiv.appendChild(label);
+                        });
+                    } else if (section.type === 'multiple') {
+                        question.options.forEach(option => {
+                            const optionValue = option.charAt(0);
+                            const label = document.createElement('label');
+                            label.className = 'flex items-center gap-2 cursor-pointer';
+                            label.innerHTML = `
+                                <input type="checkbox" name="multiple-${sectionIndex}-${questionIndex}" value="${optionValue}" class="w-4 h-4 text-primary focus:ring-primary/50">
+                                <span>${option}</span>
+                            `;
+                            label.querySelector('input').addEventListener('change', (e) => {
+                                if (isSubmitted || checkedQuestions[answerKey]) return;
+                                if (!userAnswers[answerKey]) {
+                                    userAnswers[answerKey] = [];
+                                }
+                                if (e.target.checked) {
+                                    userAnswers[answerKey].push(optionValue);
+                                    userAnswers[answerKey] = [...new Set(userAnswers[answerKey])].sort();
+                                } else {
+                                    userAnswers[answerKey] = userAnswers[answerKey].filter(value => value !== optionValue);
+                                }
+                            });
+                            optionsDiv.appendChild(label);
+                        });
+                    }
+
+                    questionDiv.appendChild(optionsDiv);
+
+                    if (currentMode !== 'exam') {
+                        const actionDiv = document.createElement('div');
+                        actionDiv.className = 'mt-3 ml-4';
+                        const checkButton = document.createElement('button');
+                        checkButton.id = `check-${sectionIndex}-${questionIndex}`;
+                        checkButton.className = 'px-3 py-1.5 rounded-md bg-primary text-white hover:bg-primary/90 transition-colors text-sm';
+                        checkButton.textContent = section.type === 'multiple' ? '检查本题' : '查看结果';
+                        checkButton.addEventListener('click', () => {
+                            if (!checkedQuestions[answerKey]) {
+                                checkQuestion(section, sectionIndex, question, questionIndex);
+                            }
+                        });
+                        actionDiv.appendChild(checkButton);
+                        questionDiv.appendChild(actionDiv);
+                    }
+
+                    const answerDiv = document.createElement('div');
+                    answerDiv.className = 'answer-result mt-3 pt-3 border-t border-gray-100 hidden';
+                    answerDiv.id = `ans-${sectionIndex}-${questionIndex}`;
+                    questionDiv.appendChild(answerDiv);
+
+                    questionsList.appendChild(questionDiv);
+                });
+
+                sectionDiv.appendChild(questionsList);
+                questionsContainer.appendChild(sectionDiv);
+            });
+
+            if (renderedCount === 0) {
+                const emptyDiv = document.createElement('div');
+                emptyDiv.className = 'bg-white rounded-lg shadow-sm p-8 text-center text-neutral';
+                emptyDiv.textContent = currentMode === 'wrong' ? '当前试卷暂无错题。练习或模拟考试答错后会自动加入错题集。' : '当前试卷暂无题目。';
+                questionsContainer.appendChild(emptyDiv);
+            }
+        }
+
+        function submitQuiz() {
+            if (currentMode !== 'exam' || isSubmitted) return;
+            isSubmitted = true;
+
+            const paper = papers[currentPaperIndex];
+            let score = 0;
+            let correct = 0;
+            let wrong = 0;
+            let unanswered = 0;
+
+            paper.sections.forEach((section, sectionIndex) => {
+                section.questions.forEach((question, questionIndex) => {
+                    const answerKey = getAnswerKey(sectionIndex, questionIndex);
+                    const userAnswer = userAnswers[answerKey];
+                    const result = evaluateQuestion(section, question, userAnswer);
+
+                    if (isAnswerEmpty(userAnswer)) {
+                        unanswered++;
+                        showQuestionResult(sectionIndex, questionIndex, result, 'unanswered');
+                        setQuestionInWrongBook(currentPaperIndex, sectionIndex, questionIndex, true);
+                    } else {
+                        score += result.score;
+                        if (result.isCorrect) {
+                            correct++;
+                        } else {
+                            wrong++;
+                        }
+                        showQuestionResult(sectionIndex, questionIndex, result);
+                        setQuestionInWrongBook(currentPaperIndex, sectionIndex, questionIndex, !result.isCorrect);
+                    }
+                });
+            });
+
+            totalScore.textContent = score.toFixed(1);
+            accuracy.textContent = ((score / paper.totalScore) * 100).toFixed(1);
+            correctCount.textContent = correct;
+            wrongCount.textContent = wrong;
+            unansweredCount.textContent = unanswered;
+            resultCard.classList.remove('hidden');
+            resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            document.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(input => {
+                input.disabled = true;
+            });
+            updateWrongBookCount();
+        }
+
+        function resetQuiz() {
+            isSubmitted = false;
+            userAnswers = {};
+            checkedQuestions = {};
+            resultCard.classList.add('hidden');
+            renderPaper(currentPaperIndex);
+            updateWrongBookCount();
+            applyModeUI();
         }
     </script>
 </body>
